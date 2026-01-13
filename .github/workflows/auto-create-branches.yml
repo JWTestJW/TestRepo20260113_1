@@ -1,0 +1,53 @@
+# ================================================
+#  機能概要
+# -----------------------------------------------
+#  このワークフローは、リポジトリ作成後の初回プッシュ時に
+#  main ブランチから dev および qa ブランチを自動作成します。
+#
+#  主な機能：
+#  - dev, qa ブランチの作成
+#  - 既存の同名ブランチがある場合は再作成（強制上書き）
+#  - テンプレートリポジトリ（名前に 'template' を含む）では実行しない
+# ================================================
+
+name: Auto Create Branches (or Manual)
+
+permissions:
+  contents: write # ブランチ作成・push に必須
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+
+jobs:
+  create-branches:
+    runs-on: ubuntu-latest # GitHub が用意する Linux 実行環境
+
+    # リポジトリ名に 'template' が含まれず、（テンプレート除外）
+    # かつ初回実行時（または手動実行時）のみ動作
+    if: >-
+      !contains(github.event.repository.name, 'template') &&
+      (github.run_number == 1 || github.event_name == 'workflow_dispatch')
+
+    steps:
+      - name: Checkout repository
+        # リポジトリの main ブランチを取得
+        uses: actions/checkout@v3
+
+      - name: Create and push dev / qa branches
+        run: |
+          # 作成するブランチの定義
+          branches=("dev" "qa")
+
+          for branch in "${branches[@]}"; do
+            # リモートブランチが存在する場合は削除
+            if git ls-remote --exit-code --heads origin "$branch"; then
+              echo "Deleting existing remote branch: $branch"
+              git push origin --delete "$branch"
+            fi
+
+            # ブランチを新規作成（強制）してプッシュ
+            git branch -f "$branch"
+            git push origin "$branch"
+          done

@@ -1,0 +1,120 @@
+# ================================================
+#  機能概要
+# -----------------------------------------------
+#  このワークフローは、dev（env で指定）から main への PR が
+#  正常にマージされた後、自動で dev を main に同期させます。
+#
+#  主な機能：
+#  - PR の head が dev、base が main の場合のみ自動同期
+#  - commit 差分の有無を確認し、不要な同期をスキップ
+#  - commit 差分がある場合はファイル内容を比較し、
+#    内容差分がある場合は安全のため同期を中止（デフォルト）
+#  - workflow_dispatch で手動実行可能（強制同期も可）
+#  - dev ブランチ名は env で指定し再利用可能
+# ================================================
+
+name: Auto Sync Branch with Main (or Manual)
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+
+  workflow_dispatch:
+    inputs:
+      continue_on_file_diff:
+        description: "ファイル内容に差分がある場合でも同期を続行するか？（true/false）"
+        required: true
+        default: "false"
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  TARGET_BRANCH: "dev" # 対象ブランチ名
+
+jobs:
+  sync-branches:
+    # 対象ブランチ名は 'dev' 固定
+    # env.TARGET_BRANCH は job.if からは使えない
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.merged == true &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'dev'
+      )
+    runs-on: ubuntu-latest # GitHub が用意する Linux 実行環境
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch all branches
+        run: |
+          git fetch --all
+
+      - name: Check commit difference
+        id: check_commit
+        run: |
+          DIFF=$(git rev-list --left-right --count origin/main...origin/${{ env.TARGET_BRANCH }})
+          echo "diff_counts=$DIFF" >> $GITHUB_OUTPUT
+
+          if [ "$DIFF" = "0	0" ] || [ "$DIFF" = "0 0" ]; then
+            echo "is_synced=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_synced=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Skip - already up to date
+        if: steps.check_commit.outputs.is_synced == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "${TARGET_BRANCH} と main は commit レベルで同期済みのためスキップします。"
+          gh run cancel ${{ github.run_id }}
+          sleep 60
+
+      - name: Check file content diff
+        id: check_file
+        run: |
+          FILE_DIFF=$(git diff --name-only origin/main origin/${{ env.TARGET_BRANCH }})
+
+          if [ -z "$FILE_DIFF" ]; then
+            echo "file_diff=false" >> $GITHUB_OUTPUT
+          else
+            echo "file_diff=true" >> $GITHUB_OUTPUT
+            echo "差分ファイル："
+            echo "$FILE_DIFF"
+          fi
+
+      - name: Skip - file contents differ
+        if: >-
+          steps.check_file.outputs.file_diff == 'true' &&
+          github.event.inputs.continue_on_file_diff != 'true'
+        run: |
+          echo "ファイル内容に差分があるため自動同期を中止します。"
+          echo "continue_on_file_diff=true の場合のみ続行可能です。"
+          exit 0
+
+      - name: Merge main into dev
+        if: >-
+          steps.check_file.outputs.file_diff == 'false' ||
+          github.event.inputs.continue_on_file_diff == 'true'
+        run: |
+          git checkout ${{ env.TARGET_BRANCH }}
+          git merge origin/main --no-ff --allow-unrelated-histories -m "Sync main into dev (auto)"
+
+      - name: Push updated target branch
+        if: >-
+          steps.check_file.outputs.file_diff == 'false' ||
+          github.event.inputs.continue_on_file_diff == 'true'
+        run: |
+          git push origin ${{ env.TARGET_BRANCH }}

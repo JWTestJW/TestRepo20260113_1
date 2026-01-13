@@ -1,0 +1,105 @@
+# ================================================
+#  機能概要
+# -----------------------------------------------
+#  このワークフローは、Self-Hosted ランナーを使用し、
+#  指定されたマウントポイントへリポジトリの資材をデプロイします。
+#
+#  主な機能：
+#  - 東京時間の日時（ミリ秒まで）を含むフォルダを作成（例: Deploy_20251223123000123）
+#  - 必要なソースコードやファイルのコピー
+#  - rsync を使用してローカルモードでマウントポイントへ
+#  - デプロイ完了後、checkoutDir を削除してクリーンアップ
+#  - secrets.MOUNT_TARGET_DIR が設定されていない場合はデプロイをスキップし、警告を表示
+# ================================================
+
+name: Auto Deploy (Self-Hosted)
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+
+jobs:
+  deploy:
+    # Self-Hosted ランナーを指定（ラベルは環境に合わせて調整してください）
+    runs-on: [self-hosted, linux]
+
+    # テンプレートリポジトリ（名前に 'template' を含む）では実行しない
+    # かつ、手動実行 または PRがマージされた場合のみ実行
+    if: >-
+      !contains(github.event.repository.name , 'template') &&
+      (github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true)
+
+    env:
+      MOUNT_TARGET_DIR: ${{ secrets.MOUNT_TARGET_DIR }}
+
+    steps:
+      - name: Checkout repository (main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: checkoutDir
+
+      - name: Prepare and Copy to Mount Point
+        env:
+          TZ: "Asia/Tokyo" # タイムゾーンを東京に設定
+        if: env.MOUNT_TARGET_DIR != ''
+        run: |
+          # 日時付きディレクトリ名の生成 (例: Deploy_20251223153000123)
+          TIMESTAMP=$(date +'%Y%m%d%H%M%S%3N')
+          DEPLOY_DIR="Deploy_$TIMESTAMP"
+
+          echo "Creating deployment directory: $DEPLOY_DIR"
+          mkdir -p "$DEPLOY_DIR"
+
+          # src フォルダのコピー（存在する場合のみ）
+          if [ -d "checkoutDir/src" ]; then
+            echo "Copying src..."
+            cp -r "checkoutDir/src" "$DEPLOY_DIR/"
+          else
+            echo "Info: src folder not found in checkoutDir, skipping."
+          fi
+
+          # test.R ファイルのコピー（存在する場合のみ）
+          if [ -f "checkoutDir/test.R" ]; then
+            echo "Copying test.R..."
+            cp "checkoutDir/test.R" "$DEPLOY_DIR/"
+          else
+            echo "Info: test.R file not found in checkoutDir, skipping."
+          fi
+
+          echo "----------------------------------------"
+          echo "Content of $DEPLOY_DIR:"
+          ls -R "$DEPLOY_DIR"
+          echo "----------------------------------------"
+
+          echo "Starting Local Copy to $MOUNT_TARGET_DIR..."
+
+          # マウントポイントの存在確認
+          if [ ! -d "$MOUNT_TARGET_DIR" ]; then
+            echo "Error: Target directory '$MOUNT_TARGET_DIR' does not exist or is not mounted."
+            exit 1
+          fi
+
+          # rsync をローカルモードで使用してコピー
+          # -a: アーカイブモード（権限維持）
+          # -v: 詳細表示
+          # SSHオプション (-e) は指定しない
+          rsync -av "$DEPLOY_DIR" "$MOUNT_TARGET_DIR/"
+            
+          echo "Deployment completed."
+
+          # checkoutDirの清掃
+          echo "Cleaning up checkoutDir..."
+          rm -rf checkoutDir
+
+      - name: Warning if secrets are missing
+        if: success() && env.MOUNT_TARGET_DIR == ''
+        run: |
+          echo "::warning::Skipped deployment because required secret is missing (MOUNT_TARGET_DIR)."

@@ -1,0 +1,52 @@
+{
+  // ===== ブランチ保護設定の最上位キー =====
+  "required_status_checks": {
+    // PR マージ前に必須となるステータスチェック
+    "strict": true,              // true: 最新 commit に対し再チェック必須
+    "contexts": []               // 必要な CI / workflow job 名
+  },
+
+  // 管理者(Admin) が保護ルールを無視できるかどうか（true で無視させない）
+  "enforce_admins": true,
+
+  // ===== レビュー設定 =====
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": true,          // 新 commit 発生時に古いレビューを無効化
+    "require_code_owner_reviews": false,    // CODEOWNERS によるレビュー必須
+    "required_approving_review_count": 0,   // 必要な Approve の数
+
+    // 1 人のユーザーが複数のレビューを行ってもカウントしない（Enterprise 機能）
+    "require_last_push_approval": false,
+
+    // 各種除外（オプション）
+    "bypass_pull_request_allowances": {
+      // 保護ルールのバイパスを許可するユーザー
+      "users": [],
+      // 保護ルールのバイパスを許可する Team
+      "teams": [],
+      // アプリによるバイパス許可
+      "apps": []
+    }
+  },
+
+  // ===== 必須署名コミット =====
+  "required_signatures": false,   // Enterprise のみ有効
+
+  // ===== force push / deletion =====
+  "allow_force_pushes": false,    // force push を禁止
+  "allow_deletions": false,       // branch 削除を禁止
+
+  // ===== その他の高度設定 =====
+  "required_linear_history": true,   // マージコミット禁止（linear history 必須）
+
+  // ===== 遷移制御（GitHub Apps/Enterprise）=====
+  "lock_branch": false,              // ブランチをロック（コミット不可）
+  "block_creations": false,          // ブランチ作成自体を禁止（Enterprise 限定）
+
+  // ===== 誰が push できるかの制限 =====
+  "restrictions": {
+    "users": [ "jiangtestgm" ],      // push を許可する GitHub ユーザー
+    "teams": [],      // push を許可する Team
+    "apps": []        // push を許可する GitHub App
+  }
+}

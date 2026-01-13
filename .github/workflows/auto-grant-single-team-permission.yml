@@ -1,0 +1,171 @@
+# ================================================
+#  機能概要
+# -----------------------------------------------
+#  このワークフローは、リポジトリ名からチーム名を推測し、
+#  そのチームに対してリポジトリへのアクセス権限を付与します。
+#
+#  主な機能：
+#  - リポジトリ名（例: Prefix_TeamName）から TeamName を抽出
+#  - 指定されたチームに maintain 権限（デフォルト）を付与
+#  - 手動実行時はチーム名と権限を指定可能
+#  - テンプレートリポジトリ（名前に 'template' を含む）では実行しない
+# ================================================
+
+name: Auto Grant Single Team Permission (or Manual)
+
+permissions:
+  contents: read
+
+on:
+  # 手动执行
+  workflow_dispatch:
+    inputs:
+      team_slug:
+        description: "付与したいTeamのSlug"
+        required: true
+      permission:
+        description: "権限 (pull/push/triage/maintain/admin)"
+        required: true
+        default: "push"
+
+  # テンプレートから生成された新規リポジトリの main への push を想定
+  push:
+    branches: [main]
+
+jobs:
+  grant:
+    runs-on: ubuntu-latest # GitHub が用意する Linux 実行環境
+
+    # リポジトリ名に 'template' が含まれず、（テンプレート除外）
+    # かつ初回実行時（または手動実行時）のみ動作
+    if: >-
+      !contains(github.event.repository.name, 'template') &&
+      (github.run_number == 1 || github.event_name == 'workflow_dispatch')
+
+    env:
+      # repo 名から team_slug を抽出するための正規表現
+      # 例: XX_STD0001_for_team01_a → team01_a
+      TEAM_FROM_REPO_REGEX: "^.*_for_(.+)$"
+      DEFAULT_PERMISSION: "push"
+      GH_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@v4
+
+      - name: 必要ツールのインストール（jq）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      # ----------------------------------------
+      # 実行モードと team_slug / permission の決定
+      # ----------------------------------------
+      - name: 実行モードとパラメータ決定
+        id: prepare
+        run: |
+          EVENT_NAME="$GITHUB_EVENT_NAME"
+          REPO_NAME="${{ github.event.repository.name }}"
+
+          echo "イベント種別: $EVENT_NAME"
+          echo "リポジトリ名: $REPO_NAME"
+          echo "TEAM_FROM_REPO_REGEX: $TEAM_FROM_REPO_REGEX"
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            MODE="manual"
+            TEAM_INPUT=$(jq -r '.inputs.team_slug // ""' "$GITHUB_EVENT_PATH")
+            PERM_INPUT=$(jq -r '.inputs.permission // ""' "$GITHUB_EVENT_PATH")
+          else
+            MODE="auto"
+            TEAM_INPUT=""
+            PERM_INPUT=""
+          fi
+
+          echo "MODE: $MODE"
+          echo "TEAM_INPUT: $TEAM_INPUT"
+          echo "PERM_INPUT: $PERM_INPUT"
+
+          # ---- team_slug を決定 ----
+          if [ "$MODE" = "manual" ]; then
+            # 手动模式：必须输入 team_slug
+            if [ -z "$TEAM_INPUT" ]; then
+              echo "エラー: 手動実行時は team_slug を入力してください。"
+              exit 1
+            fi
+            TEAM_SLUG="$TEAM_INPUT"
+            echo "手動実行: 入力された team_slug '$TEAM_SLUG' を使用します。"
+          else
+            # 自動模式：用正则从 REPO_NAME 抽取 team_slug
+            if [[ "$REPO_NAME" =~ $TEAM_FROM_REPO_REGEX ]]; then
+              TEAM_SLUG="${BASH_REMATCH[1]}"
+              if [ -z "$TEAM_SLUG" ]; then
+                echo "エラー: 正規表現にマッチしましたが、グループ1が空です。REPO_NAME='$REPO_NAME', REGEX='$TEAM_FROM_REPO_REGEX'"
+                exit 1
+              fi
+              echo "自動抽出された Team slug: $TEAM_SLUG"
+            else
+              echo "エラー: リポジトリ名 '$REPO_NAME' は正規表現 '$TEAM_FROM_REPO_REGEX' にマッチしません。Team slug を抽出できません。"
+              exit 1
+            fi
+          fi
+
+          # ---- permission を決定 ----
+          if [ "$MODE" = "manual" ]; then
+            # 手动模式：直接使用用户输入（UI 已保证 required + default）
+            PERMISSION="$PERM_INPUT"
+            echo "手動実行: 入力された permission '$PERM_INPUT' を使用します。"
+          else
+            # 自動模式：固定使用 DEFAULT_PERMISSION
+            PERMISSION="$DEFAULT_PERMISSION"
+            echo "自動実行: permission は常に DEFAULT_PERMISSION('$DEFAULT_PERMISSION') を使用します。"
+          fi
+
+          echo "最終的に使用する Team slug: $TEAM_SLUG"
+          echo "最終的に使用する権限: $PERMISSION"
+
+          echo "mode=$MODE" >> $GITHUB_OUTPUT
+          echo "team_slug=$TEAM_SLUG" >> $GITHUB_OUTPUT
+          echo "permission=$PERMISSION" >> $GITHUB_OUTPUT
+
+      - name: Team存在チェック（存在しない場合は終了）
+        run: |
+          TEAM="${{ steps.prepare.outputs.team_slug }}"
+          ORG="${{ github.repository_owner }}"
+
+          echo "チェック中: Team '$TEAM' が ORG '$ORG' に存在するか確認します..."
+
+          gh api /orgs/$ORG/teams --jq '.[].slug' > team_list.txt
+
+          if ! grep -qx "$TEAM" team_list.txt; then
+            echo "エラー: Team '$TEAM' は存在しません。"
+            exit 1
+          fi
+
+      - name: 権限チェック（誤りなら終了）
+        run: |
+          PERM="${{ steps.prepare.outputs.permission }}"
+          VALID=("pull" "push" "triage" "maintain" "admin")
+
+          echo "権限チェック: $PERM"
+
+          if [[ ! " ${VALID[*]} " =~ " ${PERM} " ]]; then
+            echo "エラー: 権限 '$PERM' は無効です。"
+            echo "使用可能: pull / push / triage / maintain / admin"
+            exit 1
+          fi
+
+      - name: 権限付与
+        run: |
+          TEAM="${{ steps.prepare.outputs.team_slug }}"
+          PERM="${{ steps.prepare.outputs.permission }}"
+          ORG="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+
+          echo "Team '$TEAM' に '$PERM' 権限を付与します → $ORG/$REPO"
+
+          gh api \
+            -X PUT \
+            "/orgs/$ORG/teams/$TEAM/repos/$ORG/$REPO" \
+            -f permission="$PERM"
+
+          echo "完了: $TEAM に '$PERM' を付与しました。"

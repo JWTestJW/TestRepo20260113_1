@@ -1,0 +1,77 @@
+# ================================================
+#  機能概要
+# -----------------------------------------------
+#  このワークフローは、チーム権限設定の完了後（または手動実行時）に
+#  main ブランチに対して保護ルールを自動適用します。
+#
+#  主な機能：
+#  - 保護ルールは.github/protection/protection.jsonc から取得
+#  - JSONC 形式のコメントを除去して標準 JSON に変換
+#  - GitHub API を使用して main ブランチに保護ルールを自動適用
+#  - テンプレートリポジトリ（名前に 'template' を含む）では実行しない
+# ================================================
+
+name: Auto Apply Branch Protection (or Manual)
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch: {}
+  workflow_run:
+    workflows: ["Auto Grant Single Team Permission (or Manual)"]
+    types:
+      - completed
+
+jobs:
+  protect:
+    runs-on: ubuntu-latest # GitHub が用意する Linux 実行環境
+
+    # リポジトリ名に 'template' が含まれず、（テンプレート除外）
+    # かつ、workflow_dispatch（手動）か、workflow_run で成功した場合のみ動作
+    if: >-
+      !contains(github.event.repository.name, 'template') &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      )
+
+    steps:
+      # GitHub App を使用して installation token を生成
+      - name: Generate App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.JW_APP_ID }}
+          private-key: ${{ secrets.JW_APP_PRIVATE_KEY }}
+
+      # 生成したトークンを環境変数 GH_TOKEN に設定
+      - name: Set GH_TOKEN
+        run: echo "GH_TOKEN=${{ steps.app-token.outputs.token }}" >> $GITHUB_ENV
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Remove comments from JSONC (convert to valid JSON)
+        run: |
+          # JSONC からコメントを除去して標準 JSON に変換
+          mkdir clean
+          cat .github/protection/protection.jsonc \
+            | sed 's,//.*$,,' \
+            | sed '/^\s*$/d' \
+            > clean/protection.json
+
+      - name: Show processed JSON
+        run: cat clean/protection.json
+
+      - name: Apply branch protection
+        run: |
+          # GitHub API を使用してブランチ保護ルールを適用
+          echo "Applying branch protection to main branch of ${{ github.repository }}"
+
+          curl -X PUT \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/vnd.github+json" \
+            --data @clean/protection.json \
+            https://api.github.com/repos/${{ github.repository }}/branches/main/protection

@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# mainブランチではmerge commitできません。
+branch=$(git rev-parse --abbrev-ref HEAD)
+if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+  echo "❌ mainブランチではmerge commitが禁止されています。"
+  exit 1
+fi
+
+echo "✔ チェック完了"
+exit 0
